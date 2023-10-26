@@ -16,4 +16,5 @@ voxels = { path = "../voxels" }
 left-right = "*"
 dashmap = "*"
 rustls = "*"
+nalgebra = "*"
 rustls-pemfile = "*"
