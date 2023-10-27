@@ -1,11 +1,11 @@
 #![allow(dead_code)]
 
 use std::{sync::{Arc, atomic::{AtomicUsize, AtomicPtr}, Mutex}, collections::HashMap, iter, mem};
-use consts::{REGION_SIZE, CHUNK_AXIS};
+use consts::{REGION_SIZE, CHUNK_AXIS, REGION_AXIS};
 use dashmap::DashMap;
 use left_right::{WriteHandle, ReadHandle, Absorb};
 use nalgebra::SVector;
-use position::{ChunkPosition, RegionPosition};
+use position::{ChunkPosition, RegionPosition, GlobalPosition};
 use voxels::Channel;
 
 mod position;
@@ -55,10 +55,10 @@ impl Default for Chunk {
 }
 
 impl Chunk {
-    fn set(&mut self, set: &[(ChunkPosition, Block)]) {
+    fn set_blocks(&mut self, set: &[(ChunkPosition, Block)]) {
         self.ids.set(set.into_iter().copied().map(|(pos,b)| (ChunkPosition::linearize(pos) as usize, b as u64)));
     }
-    fn get(&self, set: &[ChunkPosition]) -> Vec<Block> {
+    fn get_blocks(&self, set: &[ChunkPosition]) -> Vec<Block> {
         //trust me ma, i know what I am doing *puts on motorcycle helmet*
         unsafe { mem::transmute(self.ids.get(set.into_iter().copied().map(|pos| ChunkPosition::linearize(pos) as usize))) }
     }
@@ -70,17 +70,17 @@ pub struct Region {
 }
 
 impl Region {
-    fn set(&mut self, set: &[(RegionPosition, Block)]) {
+    fn set_blocks(&mut self, set: &[(RegionPosition, Block)]) {
         let mut map = HashMap::<usize, Vec<(ChunkPosition, Block)>>::new();
         for (pos, block) in set.into_iter().copied() {
             let index = (pos / CHUNK_AXIS as u64).linearize() as usize;
             map.entry(index).or_default().push((pos.to_chunk_pos(), block));
         }
         for (index, blocks_for_chunk) in map {
-            self.chunks.get_mut(index).unwrap().set(&blocks_for_chunk)
+            self.chunks.get_mut(index).unwrap().set_blocks(&blocks_for_chunk)
         }
     }
-    fn get(&self, set: &[RegionPosition]) -> Vec<Block> {
+    fn get_blocks(&self, set: &[RegionPosition]) -> Vec<Block> {
         let mut blocks = vec![];
         let mut map = HashMap::<usize, Vec<ChunkPosition>>::new();
         for pos in set.into_iter().copied() {
@@ -88,7 +88,7 @@ impl Region {
             map.entry(index).or_default().push(pos.to_chunk_pos());
         }
         for (index, chunk_positions) in map {
-            blocks.extend(self.chunks[index].get(&chunk_positions))
+            blocks.extend(self.chunks[index].get_blocks(&chunk_positions))
         }
         blocks
     }
@@ -99,7 +99,7 @@ impl Absorb<Operation> for Region {
     fn absorb_first(&mut self, operation: &mut Operation, _: &Self) {
         use Operation::*;
         match operation {
-            SetBlocks(blocks) => self.set(blocks)
+            SetBlocks(blocks) => self.set_blocks(blocks)
         }
     }
 
@@ -131,7 +131,7 @@ pub enum Operation {
 pub struct Writer(WriteHandle<Region, Operation>);
 
 impl Writer {
-    fn set(&mut self, set: Vec<(RegionPosition, Block)>) {
+    fn set_blocks(&mut self, set: Vec<(RegionPosition, Block)>) {
         let handle = &mut self.0;
 
         handle.append(Operation::SetBlocks(set));
@@ -141,10 +141,10 @@ impl Writer {
 pub struct Reader(ReadHandle<Region>);
 
 impl Reader {
-    fn get(&self, set: &[RegionPosition]) {
+    fn get_blocks(&self, set: &[RegionPosition]) {
         let handle = &self.0;
 
-        handle.enter().expect("could not enter").get(set);
+        handle.enter().expect("could not enter").get_blocks(set);
     }
 }
 
@@ -152,4 +152,17 @@ impl Reader {
 pub struct Higgs {
     writers: DashMap<RegionId, Writer>,
     readers: DashMap<RegionId, Reader>,
+}
+
+impl Higgs {
+    fn set_blocks(&mut self, set: Vec<(GlobalPosition, Block)>) {
+        let mut map = HashMap::<u64, Vec<(RegionPosition, Block)>>::new();
+        for (pos, block) in set {
+            let id = (pos / (CHUNK_AXIS * REGION_AXIS) as i64).linearize();
+            map.entry(id).or_default().push((pos.to_region_pos(), block));
+        }
+        for (id, blocks_for_region) in map {
+            self.writers.get_mut(&id).unwrap().set_blocks(blocks_for_region)
+        }
+    }   
 }

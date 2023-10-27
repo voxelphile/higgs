@@ -1,6 +1,7 @@
 use std::ops;
 
 use crate::consts::{CHUNK_AXIS, REGION_AXIS};
+use higgs::consts::WORLD_AXIS;
 use nalgebra::{SVD, SVector};
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -10,13 +11,35 @@ pub struct RegionPosition(SVector<u64, 3>);
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct GlobalPosition(SVector<i64, 3>);
 
+pub type ChunkId = u64;
+pub type RegionId = u64;
+
 impl RegionPosition {
+    pub fn to_chunk_id(self) -> ChunkId {
+        linearize(self / CHUNK_AXIS, REGION_AXIS)
+    }
     pub fn to_chunk_pos(self) -> ChunkPosition {
         ChunkPosition((self % CHUNK_AXIS as u64).0)
     }
 }
 
+pub fn linearize(pos: SVector<u64, 3>, axis: u64) -> u64 {
+    (pos[2] * axis + pos[1]) * axis + pos[0]
+}
+
+pub fn delineraize(index: u64, axis: u64) -> SVector<u64, 3> {
+    let mut idx = index;
+    let z = idx / axis.pow(2);
+    idx -= z * axis.pow(2);
+    let y = idx / axis;
+    let x = idx % axis;
+    SVector::<u64, 3>::new(x,y,z)
+}
+
 impl GlobalPosition {
+    pub fn to_region_id(self) -> RegionId {
+        linearize(nalgebra::try_convert((self + WORLD_AXIS / 2).0).unwrap(), WORLD_AXIS)
+    }
     pub fn to_region_pos(self) -> RegionPosition {
         RegionPosition(nalgebra::try_convert((self % REGION_AXIS as i64).0).unwrap())
     }
@@ -26,15 +49,10 @@ macro_rules! linearization {
     ($type:ty, $axis:expr) => {
         impl $type {
             pub fn linearize(self) -> u64 {
-                (self.0[2] * $axis + self.0[1]) * $axis + self.0[0]
+                linearize(self.0, $axis)
             }
             pub fn delineraize(index: u64) -> Self {
-                let mut idx = index;
-                let z = idx / $axis.pow(2);
-                idx -= z * $axis.pow(2);
-                let y = idx / $axis;
-                let x = idx % $axis;
-                Self::new(x,y,z)
+                Self(delineraize(index, $axis))
             }
         }
     };
