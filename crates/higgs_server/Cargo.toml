@@ -7,3 +7,7 @@ edition = "2021"
 
 [dependencies]
 higgs = { path = "../higgs" }
+tokio = { version = "*", features = ["full"] }
+quinn = "*"
+rustls = "*"
+rustls-pemfile = "*"

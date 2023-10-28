@@ -10,11 +10,14 @@ repository = "https://github.com/voxelphile/higgs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-tokio = { version = "*", features = ["full"] }
-quinn = "*"
-voxels = { path = "../voxels" }
+
+voxels = { path = "../../../voxels" }
 left-right = "*"
 dashmap = "*"
-rustls = "*"
-nalgebra = "*"
-rustls-pemfile = "*"
+nalgebra = { version = "*", features = ["serde-serialize"] }
+tokio = { version = "*", features = ["full"] }
+quinn = "*"
+bincode = "*"
+serde = { version = "*", features = ["derive"] }
+uuid = { version = "*", features = ["v4", "serde"] }
+futures = "*"

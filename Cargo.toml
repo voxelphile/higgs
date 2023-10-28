@@ -1,20 +1,2 @@
-[package]
-name = "higgs"
-version = "0.0.1"
-edition = "2021"
-license = "MIT"
-description = "A spatial database"
-repository = "https://github.com/voxelphile/higgs"
-
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[dependencies]
-tokio = { version = "*", features = ["full"] }
-quinn = "*"
-voxels = { path = "../voxels" }
-left-right = "*"
-dashmap = "*"
-rustls = "*"
-nalgebra = "*"
-rustls-pemfile = "*"
+[workspace]
+members = ["crates/*"]
