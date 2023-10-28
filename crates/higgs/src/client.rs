@@ -79,10 +79,20 @@ impl Client {
                         Request::Subscribe(region_ids) => {
                             let mut refresh = HashMap::new();
 
+
                             for region_id in region_ids {
+                                
+                            let reader_factory = match workload.reader_factories.get(&region_id) {
+                                Some(reader_factory) => reader_factory,
+                                None => {
+                                    WorkUnit::init().await;
+                                    workload.reader_factories.get(&region_id).unwrap()
+                                }
+                            };
+
                                 readers.insert(
                                     region_id,
-                                    workload.reader_factories.get(&region_id).unwrap().handle(),
+                                    reader_factory.unwrap().handle(),
                                 );
                                 let read_guard = readers[&region_id].enter().unwrap();
 

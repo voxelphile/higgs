@@ -14,7 +14,7 @@ use std::{
     sync::Arc,
 };
 use tokio::sync::{
-    broadcast::{Receiver, Sender},
+    broadcast::{Receiver, Sender, self},
     Mutex,
 };
 
@@ -154,6 +154,21 @@ pub struct WorkUnit {
     region: Region,
     publisher: Arc<Sender<Procedure>>,
     subscriber: Arc<Receiver<Procedure>>,
+}
+
+impl WorkUnit {
+    fn init(region_id: RegionId, work_load: &Workload) {
+        let (tx, rx) = broadcast::channel(2usize.pow(16));
+        let (w, r) = left_right::new_from_empty(WorkUnit {
+            region: Default::default(),
+            publisher: Arc::new(tx),
+            subscriber: Arc::new(rx),
+        });
+        let (w, r) = (Writer(Mutex::new(w)), ReaderFactory(r.factory()));
+
+        work_load.writers.insert(region_id, w);
+        work_load.reader_factories.insert(region_id, r);
+    }
 }
 
 impl Absorb<Procedure> for WorkUnit {
