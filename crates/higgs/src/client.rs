@@ -1,31 +1,28 @@
-use std::{collections::HashMap, iter, sync::Arc, time::Duration};
-
+use crate::{Procedure, WorkLoad, WorkUnit};
 use dashmap::DashMap;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use game_common::position::RegionId;
+use higgs_common::net::{Request, Response};
+use higgs_common::region::*;
 use left_right::ReadHandle;
 use quinn::{Connection, ReadError, WriteError};
+use std::{collections::HashMap, iter, sync::Arc, time::Duration};
 use tokio::sync::{
     broadcast::{self, Receiver},
     mpsc::unbounded_channel,
-};
-
-use crate::{
-    net::{Request, Response},
-    position::RegionId,
-    Operation, Procedure, WorkUnit, Workload,
 };
 
 pub type ClientId = uuid::Uuid;
 
 pub struct Client {
     connection: Connection,
-    workload: Arc<Workload>,
+    workload: Arc<WorkLoad>,
     subscriptions: Arc<DashMap<RegionId, Receiver<Procedure>>>,
 }
 
 impl Client {
-    pub fn new(connection: Connection, workload: Arc<Workload>) -> Self {
+    pub fn new(connection: Connection, workload: Arc<WorkLoad>) -> Self {
         Self {
             connection,
             workload,
@@ -79,21 +76,17 @@ impl Client {
                         Request::Subscribe(region_ids) => {
                             let mut refresh = HashMap::new();
 
-
                             for region_id in region_ids {
-                                
-                            let reader_factory = match workload.reader_factories.get(&region_id) {
-                                Some(reader_factory) => reader_factory,
-                                None => {
-                                    WorkUnit::init().await;
-                                    workload.reader_factories.get(&region_id).unwrap()
-                                }
-                            };
+                                let reader_factory = match workload.reader_factories.get(&region_id)
+                                {
+                                    Some(reader_factory) => reader_factory,
+                                    None => {
+                                        WorkUnit::init(region_id, workload.clone());
+                                        workload.reader_factories.get(&region_id).unwrap()
+                                    }
+                                };
 
-                                readers.insert(
-                                    region_id,
-                                    reader_factory.unwrap().handle(),
-                                );
+                                readers.insert(region_id, reader_factory.handle());
                                 let read_guard = readers[&region_id].enter().unwrap();
 
                                 subscriptions

@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{position::RegionId, Operation, Region};
+use game_common::position::RegionId;
+use crate::{region::*};
 
 #[derive(Serialize, Deserialize)]
 pub enum Request {

@@ -1,4 +1,4 @@
-use crate::position::PrecisePosition;
+use game_common::position::PrecisePosition;
 use nalgebra::SVector;
 use serde::{Deserialize, Serialize};
 

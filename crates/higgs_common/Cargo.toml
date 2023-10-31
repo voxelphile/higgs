@@ -1,0 +1,13 @@
+[package]
+name = "higgs_common"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+serde = { version = "*", features = ["derive"] }
+nalgebra = { version = "*", features = ["serde-serialize"] }
+voxels = { path = "../../../voxels" }
+uuid = { version = "*", features = ["v4", "serde"] }
+game_common = { path = "../../../game_common/" }

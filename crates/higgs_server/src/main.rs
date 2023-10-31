@@ -11,7 +11,7 @@ async fn main() {
         .parse()
         .unwrap();
 
-    let workload = Arc::new(Workload::default());
+    let workload = Arc::new(WorkLoad::default());
 
     let Some(rustls_pemfile::Item::PKCS8Key(key)) =
         rustls_pemfile::read_one(&mut KEY.as_bytes().to_vec().as_slice())

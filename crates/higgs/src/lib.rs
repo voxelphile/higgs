@@ -1,170 +1,121 @@
 #![allow(dead_code)]
 
 use client::ClientId;
-use consts::{CHUNK_AXIS, REGION_SIZE};
 use dashmap::DashMap;
-use entity::{Entity, EntityId};
+use futures::Future;
+use game_common::consts::*;
+use game_common::position::{ChunkPosition, RegionId, RegionPosition};
+use google_cloud_storage::http::objects::{
+    download::Range,
+    get::GetObjectRequest,
+    upload::{Media, UploadObjectRequest, UploadType},
+};
+use higgs_common::entity::{Entity, EntityId};
+use higgs_common::region::*;
 use left_right::{Absorb, ReadHandleFactory, WriteHandle};
-use position::{ChunkPosition, RegionId, RegionPosition};
 use serde::{Deserialize, Serialize};
 
 use std::{
     collections::{HashMap, HashSet},
     iter, mem, ops,
     sync::Arc,
+    time::Duration,
 };
 use tokio::sync::{
-    broadcast::{Receiver, Sender, self},
-    Mutex,
+    broadcast::{self, Receiver, Sender},
+    oneshot, Mutex,
 };
 
-use voxels::Channel;
-
 pub mod client;
-pub mod entity;
-pub mod net;
-pub mod position;
-
-pub mod consts {
-    pub const REGION_AXIS: u64 = 8;
-
-    pub const REGION_SIZE: u64 = REGION_AXIS.pow(3);
-
-    pub const CHUNK_AXIS: u64 = 8;
-
-    pub const CHUNK_SIZE: u64 = CHUNK_AXIS.pow(3);
-
-    pub const WORLD_AXIS: u64 = 1_000_000;
-
-    pub const WORLD_SIZE: u64 = WORLD_AXIS.pow(3);
-
-    pub const CHUNKS_PER_REGION: u64 = REGION_SIZE / CHUNK_SIZE;
-}
-
-#[repr(u64)]
-#[derive(Clone, Copy, Deserialize, Serialize)]
-pub enum Block {
-    Void,
-    Air,
-    Grass,
-    Dirt,
-    Stone,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub struct Chunk {
-    ids: Channel,
-}
-
-impl Default for Chunk {
-    fn default() -> Self {
-        let mut ids = Channel::default();
-        ids.extend(
-            iter::repeat(Block::Void)
-                .map(|block| block as u64)
-                .take(consts::CHUNK_SIZE as usize),
-        );
-        Self { ids }
-    }
-}
-
-impl Chunk {
-    fn set_blocks<I: IntoIterator<Item = (ChunkPosition, Block)>>(&mut self, iter: I) {
-        self.ids.set(
-            iter.into_iter()
-                .map(|(pos, b)| (ChunkPosition::linearize(pos), b as u64)),
-        );
-    }
-    fn get_blocks<I: IntoIterator<Item = ChunkPosition>>(
-        &self,
-        iter: I,
-    ) -> HashMap<ChunkPosition, Block> {
-        let block_positions = iter.into_iter().collect::<Vec<_>>();
-
-        //trust me ma, i know what I am doing *puts on motorcycle helmet*
-        let blocks: Vec<Block> = unsafe {
-            mem::transmute(
-                self.ids.get(
-                    block_positions
-                        .iter()
-                        .copied()
-                        .map(ChunkPosition::linearize),
-                ),
-            )
-        };
-
-        block_positions
-            .into_iter()
-            .zip(blocks)
-            .collect::<HashMap<_, _>>()
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub struct Region {
-    chunks: Vec<Chunk>,
-    entities: HashMap<EntityId, Entity>,
-}
-
-impl Region {
-    fn set_blocks<I: IntoIterator<Item = (RegionPosition, Block)>>(&mut self, iter: I) {
-        let mut map = HashMap::<usize, HashMap<ChunkPosition, Block>>::new();
-        for (pos, block) in iter.into_iter() {
-            map.entry(pos.to_chunk_id() as usize)
-                .or_default()
-                .insert(pos.to_chunk_pos(), block);
-        }
-        for (index, blocks_for_chunk) in map {
-            self.chunks
-                .get_mut(index)
-                .unwrap()
-                .set_blocks(blocks_for_chunk)
-        }
-    }
-    fn get_blocks<I: IntoIterator<Item = RegionPosition>>(
-        &self,
-        iter: I,
-    ) -> HashMap<RegionPosition, Block> {
-        let mut blocks = HashMap::new();
-        let mut map = HashMap::<u64, HashSet<ChunkPosition>>::new();
-        for pos in iter.into_iter() {
-            let index = (pos / CHUNK_AXIS).linearize();
-            map.entry(index).or_default().insert(pos.to_chunk_pos());
-        }
-        for (index, chunk_positions) in map {
-            blocks.extend(
-                self.chunks[index as usize]
-                    .get_blocks(chunk_positions)
-                    .into_iter()
-                    .map(|(p, b)| (p.to_region_pos(index), b)),
-            );
-        }
-        blocks
-    }
-    fn insert_entities(&mut self, mapping: HashMap<EntityId, Entity>) {
-        self.entities.extend(mapping);
-    }
-    fn remove_entities(&mut self, entities: HashSet<EntityId>) {
-        self.entities.retain(|id, _| !entities.contains(id));
-    }
-}
 
 #[derive(Clone)]
 pub struct WorkUnit {
+    region_id: RegionId,
     region: Region,
     publisher: Arc<Sender<Procedure>>,
     subscriber: Arc<Receiver<Procedure>>,
+    work_load: Arc<WorkLoad>,
+    kill_switch: Arc<oneshot::Sender<()>>,
 }
 
 impl WorkUnit {
-    fn init(region_id: RegionId, work_load: &Workload) {
+    fn save(region_id: RegionId, work_load: Arc<WorkLoad>, region: Region) {
+        tokio::spawn(async move {
+            let data = bincode::serialize(&region).unwrap();
+
+            let object_name = format!("regions/{}", region_id);
+
+            work_load
+                .cloud_storage_client
+                .upload_object(
+                    &UploadObjectRequest {
+                        bucket: "xenotech".to_owned(),
+                        ..Default::default()
+                    },
+                    data,
+                    &UploadType::Simple(Media::new(object_name)),
+                )
+                .await
+                .expect("failed to upload region");
+        });
+    }
+
+    async fn save_on_timer(
+        region_id: RegionId,
+        work_load: Arc<WorkLoad>,
+        mut kill_switch: oneshot::Receiver<()>,
+    ) -> impl Future<Output = ()> {
+        async move {
+            loop {
+                if kill_switch.try_recv().is_ok() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_secs(60 * 5)).await;
+                let read_handle = work_load.reader_factories.get(&region_id).unwrap().handle();
+                let read_guard = read_handle.enter().unwrap();
+                let region = read_guard.region.clone();
+                drop(read_guard);
+                Self::save(region_id, work_load.clone(), region);
+            }
+        }
+    }
+    async fn init(region_id: RegionId, work_load: Arc<WorkLoad>) {
+        let (save_killswitch_tx, save_killswitch_rx) = oneshot::channel();
+
         let (tx, rx) = broadcast::channel(2usize.pow(16));
         let (w, r) = left_right::new_from_empty(WorkUnit {
+            region_id,
             region: Default::default(),
             publisher: Arc::new(tx),
             subscriber: Arc::new(rx),
+            work_load: work_load.clone(),
+            kill_switch: Arc::new(save_killswitch_tx),
         });
         let (w, r) = (Writer(Mutex::new(w)), ReaderFactory(r.factory()));
+
+        tokio::spawn(WorkUnit::save_on_timer(
+            region_id,
+            work_load.clone(),
+            save_killswitch_rx,
+        ));
+
+        if let Ok(data) = work_load
+            .cloud_storage_client
+            .download_object(
+                &GetObjectRequest {
+                    bucket: "xenotech".to_string(),
+                    object: format!("regions/{region_id}"),
+                    ..Default::default()
+                },
+                &Range::default(),
+            )
+            .await
+        {
+            unsafe {
+                w.lock().await.raw_write_handle().as_mut().region =
+                    bincode::deserialize(&data).unwrap()
+            };
+        }
 
         work_load.writers.insert(region_id, w);
         work_load.reader_factories.insert(region_id, r);
@@ -192,25 +143,9 @@ impl Absorb<Procedure> for WorkUnit {
 
     fn drop_first(self: Box<Self>) {}
 
-    fn drop_second(self: Box<Self>) {}
-}
-
-impl Default for Region {
-    fn default() -> Self {
-        Self {
-            chunks: iter::repeat_with(Chunk::default)
-                .take(REGION_SIZE as usize)
-                .collect(),
-            entities: Default::default(),
-        }
+    fn drop_second(self: Box<Self>) {
+        WorkUnit::save(self.region_id, self.work_load.clone(), self.region.clone());
     }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub enum Operation {
-    SetBlocks(HashMap<RegionPosition, Block>),
-    InsertEntity(HashMap<EntityId, Entity>),
-    RemoveEntity(HashSet<EntityId>),
 }
 
 #[derive(Clone)]
@@ -262,9 +197,10 @@ impl ops::Deref for ReaderFactory {
 // }
 
 #[derive(Default)]
-pub struct Workload {
+pub struct WorkLoad {
     writers: DashMap<RegionId, Writer>,
     reader_factories: DashMap<RegionId, ReaderFactory>,
+    cloud_storage_client: google_cloud_storage::client::Client,
 }
 
 // impl Higgs {
